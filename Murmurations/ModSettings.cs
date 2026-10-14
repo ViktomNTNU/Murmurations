@@ -231,6 +231,21 @@ namespace Murmurations
         internal bool AnimatedCrows => CrowAnimation != CrowAnimationStyle.NoAnimations;
         internal bool DirectionalCrows => CrowAnimation == CrowAnimationStyle.Directional;
 
+        [Section("Sound")]
+        [Name("Flock sound")]
+        [Description("Plays the sound of the flock from the birds nearest to you. It gets louder as the flock comes closer and fades out with distance. Requires the AudioManager mod. Default: Enabled.")]
+        public bool FlockSound = true;
+
+        [Name("Sound volume")]
+        [Description("Volume of the flock sound when you are right next to the birds. Also follows the game's ambience volume. Default: 0.35.")]
+        [Slider(0f, 1f, 101, NumberFormat = "{0:0.00}")]
+        public float SoundVolume = 0.35f;
+
+        [Name("Sound range")]
+        [Description("Distance from the nearest birds at which the flock sound has faded to silence. Default: 300m.")]
+        [Slider(100f, 1000f, 91, NumberFormat = "{0:0}m")]
+        public float SoundRange = 300f;
+
         [Section("Advanced")]
 
         [Name("Fade in duration")]

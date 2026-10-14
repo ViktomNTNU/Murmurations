@@ -1,5 +1,6 @@
 ﻿[assembly: MelonInfo(typeof(Murmurations.Core), "Murmurations", "1.0.1", "EtherSystem", null)]
 [assembly: MelonGame("Hinterland", "TheLongDark")]
+[assembly: MelonOptionalDependencies("AudioManager")]
 
 namespace Murmurations
 {

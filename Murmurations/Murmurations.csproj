@@ -47,6 +47,7 @@
 		<Compile Include="Core.cs" />
 		<Compile Include="ModSettings.cs" />
 		<Compile Include="MurmurationManager.cs" />
+		<Compile Include="MurmurationSound.cs" />
 	</ItemGroup>
 
 	<ItemGroup>
@@ -59,9 +60,15 @@
 		<Reference Include="ModSettings">
 			<HintPath>$(TheLongDarkPath)\Mods\ModSettings.dll</HintPath>
 		</Reference>
+		<!-- Optional at runtime: without AudioManager the murmurations are silent. -->
+		<Reference Include="AudioManager">
+			<HintPath>$(TheLongDarkPath)\Mods\AudioManager.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
 	</ItemGroup>
 
 	<Target Name="PostBuild" AfterTargets="PostBuildEvent">
 		<Copy SourceFiles="$(TargetPath)" DestinationFolder="$(TheLongDarkPath)/Mods" />
+		<Copy SourceFiles="Sounds\Sound_of_massed_starlings.wav" DestinationFolder="$(TheLongDarkPath)/Mods/Murmurations" SkipUnchangedFiles="true" Condition="Exists('Sounds\Sound_of_massed_starlings.wav')" />
 	</Target>
 </Project>

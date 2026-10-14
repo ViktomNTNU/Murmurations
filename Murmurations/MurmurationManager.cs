@@ -19,7 +19,11 @@
                 return;
             }
 
-            if (GameManager.m_IsPaused) return;
+            if (GameManager.m_IsPaused)
+            {
+                PauseSounds();
+                return;
+            }
 
             float dt = Time.deltaTime;
             if (dt <= 0f) return;
@@ -66,6 +70,14 @@
             }
 
             s_Controllers.Clear();
+        }
+
+        private static void PauseSounds()
+        {
+            for (int i = 0; i < s_Controllers.Count; i++)
+            {
+                s_Controllers[i]?.PauseSound();
+            }
         }
 
         public static void RefreshSettings()
@@ -434,6 +446,7 @@
         private float m_FadeOutDurationHours;
         private GameObject m_Root;
         private Material[] m_Materials;
+        private readonly MurmurationSound m_Sound = new();
         private int m_TargetBoidCount;
         private int m_TargetSimulatedBoidCount;
         private int m_LastAppliedBoidCount = -1;
@@ -620,6 +633,7 @@
 
             ApplyRuntimeSettings();
             UpdateLifecycle(elapsedHours);
+            UpdateSound();
 
             if (Settings.options.SimulationFPSLimit <= 0f || Settings.options.MaxSpeed <= 0f)
             {
@@ -817,7 +831,37 @@
             }
         }
 
+        public void PauseSound()
+        {
+            m_Sound.Pause();
+        }
+
+        private void UpdateSound()
+        {
+            int simulatedCount = GetActiveSimulatedBoidCount();
+            Vector3 center = GetLeaderCenter(simulatedCount);
+            m_Sound.Update(m_Root != null ? m_Root.transform : null, center, GetLeaderRadius(simulatedCount, center), GetLifecycleFade());
+        }
+
+        // Typical distance of the leaders from the flock center.
+        private float GetLeaderRadius(int simulatedCount, Vector3 center)
+        {
+            int count = Mathf.Min(simulatedCount, m_Boids.Count);
+            if (count <= 0) return 0f;
+
+            float sqrDistanceSum = 0f;
+            for (int i = 0; i < count; i++) sqrDistanceSum += (m_Boids[i].Position - center).sqrMagnitude;
+
+            return Mathf.Sqrt(sqrDistanceSum / count);
+        }
+
         private float GetCurrentVisualAlpha()
+        {
+            return GetLifecycleFade() * Mathf.Clamp01(Settings.options.BaseAlpha);
+        }
+
+        // 0 to 1 while the murmuration fades in and out.
+        private float GetLifecycleFade()
         {
             float fadeInDuration = Mathf.Max(0.01f, Settings.options.FadeInDurationHours);
             float fadeIn = Mathf.Clamp01(m_LifecycleElapsedHours / fadeInDuration);
@@ -832,7 +876,7 @@
                 fadeOut = 0f;
             }
 
-            return Mathf.Clamp01(fadeIn * fadeOut) * Mathf.Clamp01(Settings.options.BaseAlpha);
+            return Mathf.Clamp01(fadeIn * fadeOut);
         }
 
         private void UpdateVisualAlpha()
@@ -1832,6 +1876,7 @@
             m_SpatialGrid.Clear();
 
             DestroyMaterials();
+            m_Sound.Destroy();
 
             if (m_Root != null)
             {

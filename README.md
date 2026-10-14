@@ -21,3 +21,14 @@ I don't plan on developing this mod any further, I'll fix whatever needs fixing 
 1. Install MelonLoader.
 2. Install [ModSettings](https://github.com/DigitalzombieTLD/ModSettings/).
 3. Place `Murmurations.dll` inside your `Mods` folder.
+
+### Flock sound (optional)
+
+Murmurations can play the sound of the flock, coming from the birds nearest to you and fading out with distance.
+
+1. Install [AudioManager](https://github.com/DigitalzombieTLD/AudioManager). Without it the murmurations are silent.
+2. Place `Sound_of_massed_starlings.wav` (from the `Murmurations/Sounds` folder) inside `Mods/Murmurations/`.
+
+## Credits
+
+The flock sound is ["Starling Roost, Ham Wall"](https://www.richardmudhar.com/blog/2019/11/the-sound-of-starlings-massing/) by Enquiring Ear (recorded 6 November 2019), licensed under [Creative Commons Attribution 4.0 (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/). It was converted from MP3 to a mono 32 kHz WAV, normalised, and its end was crossfaded into its start so it loops seamlessly.

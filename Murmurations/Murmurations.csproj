@@ -48,6 +48,8 @@
 		<Compile Include="ModSettings.cs" />
 		<Compile Include="MurmurationManager.cs" />
 		<Compile Include="MurmurationSound.cs" />
+		<Compile Include="FlockRenderer.cs" />
+		<Compile Include="ManagedMath.cs" />
 	</ItemGroup>
 
 	<ItemGroup>

@@ -1,4 +1,7 @@
-﻿namespace Murmurations
+﻿using System.Runtime.InteropServices;
+using Vec3 = System.Numerics.Vector3;
+
+namespace Murmurations
 {
     internal static class MurmurationManager
     {
@@ -431,14 +434,17 @@
             BirdTextureFrame3ResourceName
         };
 
-        private static Mesh s_QuadMesh;
+        private static readonly Vector3 s_UnityDown = (-Vec3.UnitY).ToUnity();
+
         private static Texture2D s_BirdTexture;
         private static Texture2D[] s_AnimatedBirdTextures;
 
         private readonly List<BoidData> m_Boids = new();
         private readonly Dictionary<int, List<int>> m_SpatialGrid = new(256);
-        private Vector3 m_AnchorStart;
-        private Vector3 m_Anchor;
+        private readonly Stack<List<int>> m_SpatialGridListPool = new();
+        private readonly FlockRenderer m_FlockRenderer = new();
+        private Vec3 m_AnchorStart;
+        private Vec3 m_Anchor;
         private float m_Elapsed;
         private float m_LifecycleElapsedHours;
         private float m_DurationHours;
@@ -453,6 +459,9 @@
         private int m_LastAppliedSimulatedBoidCount = -1;
         private float m_LastAppliedFollowerTrailLength = -1f;
         private bool m_LastAppliedAnimatedCrows;
+        private float m_LastAppliedAlpha = -1f;
+        private bool m_LastAppliedAuroraVisuals;
+        private float m_LastAppliedAuroraTint = -1f;
         private float m_SimulationTimer;
         private float m_GroundCheckTimerSeconds;
         private Camera m_CachedViewerCamera;
@@ -460,8 +469,8 @@
         private bool m_LoggedNoViewerCamera;
         private bool m_IsAuroraMurmuration;
         private MurmurationLifecycleState m_State;
-        private Vector3 m_CurrentManeuverDirection = Vector3.forward;
-        private Vector3 m_TargetManeuverDirection = Vector3.forward;
+        private Vec3 m_CurrentManeuverDirection = Vec3.UnitZ;
+        private Vec3 m_TargetManeuverDirection = Vec3.UnitZ;
         private float m_BehaviorTimerSeconds;
         private float m_CurrentAlignmentWeight = 1f;
         private float m_TargetAlignmentWeight = 1f;
@@ -484,12 +493,12 @@
         public void Initialize(Vector3 center, float durationHours, bool isAuroraMurmuration, string source)
         {
             m_Root = new GameObject("Murmurations_Controller");
-            m_AnchorStart = center;
-            m_Anchor = center;
-            m_DurationHours = Mathf.Max(0.01f, durationHours);
+            m_AnchorStart = center.ToNumerics();
+            m_Anchor = m_AnchorStart;
+            m_DurationHours = Math.Max(0.01f, durationHours);
             m_IsAuroraMurmuration = isAuroraMurmuration;
             m_State = MurmurationLifecycleState.Forming;
-            m_FadeOutDurationHours = Mathf.Max(0.01f, Settings.options.FadeOutDurationHours);
+            m_FadeOutDurationHours = Math.Max(0.01f, Settings.options.FadeOutDurationHours);
 
             RefreshSettings();
             PickNewBehaviorRegime(true);
@@ -507,25 +516,25 @@
         {
             if (Settings.options == null) return;
 
-            int newTargetBoidCount = Mathf.Clamp(Settings.options.BoidCount, 1, 10000);
-            int newTargetSimulatedBoidCount = Mathf.Clamp(Settings.options.SimulatedBoidCount, 1, newTargetBoidCount);
-            float newFollowerTrailLength = Mathf.Clamp(Settings.options.FollowerTrailLength, 5f, 400f);
+            int newTargetBoidCount = ManagedMath.Clamp(Settings.options.BoidCount, 1, 10000);
+            int newTargetSimulatedBoidCount = ManagedMath.Clamp(Settings.options.SimulatedBoidCount, 1, newTargetBoidCount);
+            float newFollowerTrailLength = ManagedMath.Clamp(Settings.options.FollowerTrailLength, 5f, 400f);
             bool newAnimatedCrows = Settings.options.AnimatedCrows;
             MurmurationBehaviorProfile newBehaviorProfile = Settings.options.BehaviorProfile;
 
             bool boidCountChanged = force || newTargetBoidCount != m_LastAppliedBoidCount;
             bool simulatedCountChanged = force || newTargetSimulatedBoidCount != m_LastAppliedSimulatedBoidCount;
-            bool followerTrailLengthChanged = force || Mathf.Abs(newFollowerTrailLength - m_LastAppliedFollowerTrailLength) > 0.01f;
+            bool followerTrailLengthChanged = force || MathF.Abs(newFollowerTrailLength - m_LastAppliedFollowerTrailLength) > 0.01f;
             bool visualMaterialChanged = force || m_Materials == null || newAnimatedCrows != m_LastAppliedAnimatedCrows || !AreMaterialsAlive();
             bool behaviorProfileChanged = newBehaviorProfile != m_LastAppliedBehaviorProfile;
 
             m_TargetBoidCount = newTargetBoidCount;
             m_TargetSimulatedBoidCount = newTargetSimulatedBoidCount;
-            m_FadeOutDurationHours = Mathf.Max(0.01f, Settings.options.FadeOutDurationHours);
+            m_FadeOutDurationHours = Math.Max(0.01f, Settings.options.FadeOutDurationHours);
 
-            float minDurationHours = Mathf.Max(0.01f, Mathf.Min(Settings.options.MinDurationHours, Settings.options.MaxDurationHours));
-            float maxDurationHours = Mathf.Max(minDurationHours, Mathf.Max(Settings.options.MinDurationHours, Settings.options.MaxDurationHours));
-            m_DurationHours = Mathf.Clamp(m_DurationHours, minDurationHours, maxDurationHours);
+            float minDurationHours = Math.Max(0.01f, Math.Min(Settings.options.MinDurationHours, Settings.options.MaxDurationHours));
+            float maxDurationHours = Math.Max(minDurationHours, Math.Max(Settings.options.MinDurationHours, Settings.options.MaxDurationHours));
+            m_DurationHours = ManagedMath.Clamp(m_DurationHours, minDurationHours, maxDurationHours);
 
             if (visualMaterialChanged) RefreshVisualMaterials();
 
@@ -555,6 +564,9 @@
 
             if (behaviorProfileChanged) PickNewBehaviorRegime(false);
 
+            // The flock mesh is rebuilt when the materials or bird count change, so draw every bird again straight away.
+            if (visualMaterialChanged || boidCountChanged) UpdateBirdVisuals(true);
+
             UpdateVisualAlpha();
         }
 
@@ -563,15 +575,10 @@
             DestroyMaterials();
 
             m_Materials = CreateMaterials();
+            m_LastAppliedAlpha = -1f;
 
-            for (int i = 0; i < m_Boids.Count; i++)
-            {
-                BoidData boid = m_Boids[i];
-                if (boid.Renderer != null) boid.Renderer.sharedMaterial = GetMaterialForFrame(0);
-
-                boid.FrameIndex = 0;
-                m_Boids[i] = boid;
-            }
+            Span<BoidData> boids = CollectionsMarshal.AsSpan(m_Boids);
+            for (int i = 0; i < boids.Length; i++) boids[i].FrameIndex = 0;
         }
 
         // Scene loads can unload the materials or textures the mod created, which leaves the crows drawn as black quads.
@@ -587,14 +594,6 @@
             return true;
         }
 
-        private Material GetMaterialForFrame(int frameIndex)
-        {
-            if (m_Materials == null || m_Materials.Length == 0) return null;
-
-            int index = Mathf.Abs(frameIndex) % m_Materials.Length;
-            return m_Materials[index];
-        }
-
         private bool IsUsingAnimatedCrowFrames()
         {
             return Settings.options != null && Settings.options.AnimatedCrows && m_Materials != null && m_Materials.Length > 1;
@@ -606,7 +605,7 @@
 
             m_State = MurmurationLifecycleState.FadingOut;
             m_FadeOutElapsedHours = 0f;
-            m_FadeOutDurationHours = Mathf.Max(0.01f, fadeOutHours);
+            m_FadeOutDurationHours = Math.Max(0.01f, fadeOutHours);
 
             Core.Log($"Murmuration fading out | Reason:{reason} | Duration:{m_FadeOutDurationHours:0.##}h");
         }
@@ -628,7 +627,7 @@
             if (dt <= 0f) return;
 
             m_Elapsed += dt;
-            m_LifecycleElapsedHours += Mathf.Max(0f, elapsedHours);
+            m_LifecycleElapsedHours += Math.Max(0f, elapsedHours);
             m_SimulationTimer += dt;
 
             ApplyRuntimeSettings();
@@ -638,7 +637,7 @@
             if (Settings.options.SimulationFPSLimit <= 0f || Settings.options.MaxSpeed <= 0f)
             {
                 UpdateVisualAlpha();
-                UpdateBoidVisualsOnly();
+                UpdateBirdVisuals(false);
                 return;
             }
 
@@ -649,7 +648,7 @@
                 return;
             }
 
-            float simulationDt = Mathf.Min(m_SimulationTimer, simulationIntervalSeconds * 2f);
+            float simulationDt = Math.Min(m_SimulationTimer, simulationIntervalSeconds * 2f);
             m_SimulationTimer = 0f;
 
             UpdateBehaviorRegime(simulationDt);
@@ -660,31 +659,31 @@
 
         private void UpdateBehaviorRegime(float dt)
         {
-            if (m_TargetManeuverDirection.sqrMagnitude <= 0.001f) PickNewBehaviorRegime(true);
+            if (m_TargetManeuverDirection.LengthSquared() <= 0.001f) PickNewBehaviorRegime(true);
 
             m_BehaviorTimerSeconds -= dt;
             if (m_BehaviorTimerSeconds <= 0f) PickNewBehaviorRegime(false);
 
-            float t = Mathf.Clamp01(dt * BehaviorRegimeBlendSpeed);
-            m_CurrentManeuverDirection = Vector3.Slerp(m_CurrentManeuverDirection, m_TargetManeuverDirection, t);
-            if (m_CurrentManeuverDirection.sqrMagnitude <= 0.001f) m_CurrentManeuverDirection = Vector3.forward;
-            m_CurrentManeuverDirection.Normalize();
+            float t = ManagedMath.Clamp01(dt * BehaviorRegimeBlendSpeed);
+            m_CurrentManeuverDirection = Vector3.Slerp(m_CurrentManeuverDirection.ToUnity(), m_TargetManeuverDirection.ToUnity(), t).ToNumerics();
+            if (m_CurrentManeuverDirection.LengthSquared() <= 0.001f) m_CurrentManeuverDirection = Vec3.UnitZ;
+            m_CurrentManeuverDirection = ManagedMath.Normalized(m_CurrentManeuverDirection);
 
-            m_CurrentAlignmentWeight = Mathf.Lerp(m_CurrentAlignmentWeight, m_TargetAlignmentWeight, t);
-            m_CurrentCohesionWeight = Mathf.Lerp(m_CurrentCohesionWeight, m_TargetCohesionWeight, t);
-            m_CurrentSeparationWeight = Mathf.Lerp(m_CurrentSeparationWeight, m_TargetSeparationWeight, t);
-            m_CurrentAnchorWeight = Mathf.Lerp(m_CurrentAnchorWeight, m_TargetAnchorWeight, t);
-            m_CurrentNoiseWeight = Mathf.Lerp(m_CurrentNoiseWeight, m_TargetNoiseWeight, t);
-            m_CurrentManeuverWeight = Mathf.Lerp(m_CurrentManeuverWeight, m_TargetManeuverWeight, t);
-            m_CurrentExpansionBias = Mathf.Lerp(m_CurrentExpansionBias, m_TargetExpansionBias, t);
+            m_CurrentAlignmentWeight = ManagedMath.Lerp(m_CurrentAlignmentWeight, m_TargetAlignmentWeight, t);
+            m_CurrentCohesionWeight = ManagedMath.Lerp(m_CurrentCohesionWeight, m_TargetCohesionWeight, t);
+            m_CurrentSeparationWeight = ManagedMath.Lerp(m_CurrentSeparationWeight, m_TargetSeparationWeight, t);
+            m_CurrentAnchorWeight = ManagedMath.Lerp(m_CurrentAnchorWeight, m_TargetAnchorWeight, t);
+            m_CurrentNoiseWeight = ManagedMath.Lerp(m_CurrentNoiseWeight, m_TargetNoiseWeight, t);
+            m_CurrentManeuverWeight = ManagedMath.Lerp(m_CurrentManeuverWeight, m_TargetManeuverWeight, t);
+            m_CurrentExpansionBias = ManagedMath.Lerp(m_CurrentExpansionBias, m_TargetExpansionBias, t);
         }
 
         private void PickNewBehaviorRegime(bool instant)
         {
-            Vector3 direction = UnityEngine.Random.onUnitSphere;
-            direction.y *= 0.25f;
-            if (direction.sqrMagnitude <= 0.001f) direction = Vector3.forward;
-            direction.Normalize();
+            Vec3 direction = UnityEngine.Random.onUnitSphere.ToNumerics();
+            direction.Y *= 0.25f;
+            if (direction.LengthSquared() <= 0.001f) direction = Vec3.UnitZ;
+            direction = ManagedMath.Normalized(direction);
             m_TargetManeuverDirection = direction;
             m_BehaviorTimerSeconds = UnityEngine.Random.Range(BehaviorRegimeMinSeconds, BehaviorRegimeMaxSeconds);
 
@@ -776,7 +775,7 @@
             {
                 AddBoidsForCurrentFormationTime();
 
-                if (m_Boids.Count >= m_TargetBoidCount && m_LifecycleElapsedHours >= Mathf.Max(0f, Settings.options.FadeInDurationHours))
+                if (m_Boids.Count >= m_TargetBoidCount && m_LifecycleElapsedHours >= Math.Max(0f, Settings.options.FadeInDurationHours))
                 {
                     m_State = MurmurationLifecycleState.Active;
                 }
@@ -790,7 +789,7 @@
             }
             else if (m_State == MurmurationLifecycleState.FadingOut)
             {
-                m_FadeOutElapsedHours += Mathf.Max(0f, elapsedHours);
+                m_FadeOutElapsedHours += Math.Max(0f, elapsedHours);
                 RemoveBoidsForCurrentFadeTime();
 
                 if (m_FadeOutElapsedHours >= m_FadeOutDurationHours)
@@ -811,19 +810,19 @@
 
         private int GetWantedBoidCountForFormation()
         {
-            float spawnInDuration = Mathf.Max(0f, Settings.options.SpawnInDurationHours);
+            float spawnInDuration = Math.Max(0f, Settings.options.SpawnInDurationHours);
             if (spawnInDuration <= 0.01f) return m_TargetBoidCount;
 
-            float progress = Mathf.Clamp01(m_LifecycleElapsedHours / spawnInDuration);
-            return Mathf.Clamp(Mathf.CeilToInt(m_TargetBoidCount * progress), 1, m_TargetBoidCount);
+            float progress = ManagedMath.Clamp01(m_LifecycleElapsedHours / spawnInDuration);
+            return ManagedMath.Clamp(ManagedMath.CeilToInt(m_TargetBoidCount * progress), 1, m_TargetBoidCount);
         }
 
         private void RemoveBoidsForCurrentFadeTime()
         {
             if (m_Boids.Count <= 0) return;
 
-            float progress = Mathf.Clamp01(m_FadeOutElapsedHours / m_FadeOutDurationHours);
-            int wantedCount = Mathf.Clamp(Mathf.CeilToInt(m_TargetBoidCount * (1f - progress)), 0, m_TargetBoidCount);
+            float progress = ManagedMath.Clamp01(m_FadeOutElapsedHours / m_FadeOutDurationHours);
+            int wantedCount = ManagedMath.Clamp(ManagedMath.CeilToInt(m_TargetBoidCount * (1f - progress)), 0, m_TargetBoidCount);
 
             while (m_Boids.Count > wantedCount)
             {
@@ -839,51 +838,59 @@
         private void UpdateSound()
         {
             int simulatedCount = GetActiveSimulatedBoidCount();
-            Vector3 center = GetLeaderCenter(simulatedCount);
-            m_Sound.Update(m_Root != null ? m_Root.transform : null, center, GetLeaderRadius(simulatedCount, center), GetLifecycleFade());
+            Vec3 center = GetLeaderCenter(simulatedCount);
+            m_Sound.Update(m_Root != null ? m_Root.transform : null, center.ToUnity(), GetLeaderRadius(simulatedCount, center), GetLifecycleFade());
         }
 
         // Typical distance of the leaders from the flock center.
-        private float GetLeaderRadius(int simulatedCount, Vector3 center)
+        private float GetLeaderRadius(int simulatedCount, Vec3 center)
         {
-            int count = Mathf.Min(simulatedCount, m_Boids.Count);
+            int count = Math.Min(simulatedCount, m_Boids.Count);
             if (count <= 0) return 0f;
 
+            ReadOnlySpan<BoidData> boids = CollectionsMarshal.AsSpan(m_Boids);
             float sqrDistanceSum = 0f;
-            for (int i = 0; i < count; i++) sqrDistanceSum += (m_Boids[i].Position - center).sqrMagnitude;
+            for (int i = 0; i < count; i++) sqrDistanceSum += (boids[i].Position - center).LengthSquared();
 
-            return Mathf.Sqrt(sqrDistanceSum / count);
+            return MathF.Sqrt(sqrDistanceSum / count);
         }
 
         private float GetCurrentVisualAlpha()
         {
-            return GetLifecycleFade() * Mathf.Clamp01(Settings.options.BaseAlpha);
+            return GetLifecycleFade() * ManagedMath.Clamp01(Settings.options.BaseAlpha);
         }
 
         // 0 to 1 while the murmuration fades in and out.
         private float GetLifecycleFade()
         {
-            float fadeInDuration = Mathf.Max(0.01f, Settings.options.FadeInDurationHours);
-            float fadeIn = Mathf.Clamp01(m_LifecycleElapsedHours / fadeInDuration);
+            float fadeInDuration = Math.Max(0.01f, Settings.options.FadeInDurationHours);
+            float fadeIn = ManagedMath.Clamp01(m_LifecycleElapsedHours / fadeInDuration);
 
             float fadeOut = 1f;
             if (m_State == MurmurationLifecycleState.FadingOut)
             {
-                fadeOut = 1f - Mathf.Clamp01(m_FadeOutElapsedHours / m_FadeOutDurationHours);
+                fadeOut = 1f - ManagedMath.Clamp01(m_FadeOutElapsedHours / m_FadeOutDurationHours);
             }
             else if (m_State == MurmurationLifecycleState.Destroyed)
             {
                 fadeOut = 0f;
             }
 
-            return Mathf.Clamp01(fadeIn * fadeOut);
+            return ManagedMath.Clamp01(fadeIn * fadeOut);
         }
 
+        // Setting a material color is a call into the game, so it is only done when the color actually changes.
         private void UpdateVisualAlpha()
         {
             if (m_Materials == null) return;
 
             float alpha = GetCurrentVisualAlpha();
+            if (alpha == m_LastAppliedAlpha && m_IsAuroraMurmuration == m_LastAppliedAuroraVisuals && Settings.options.AuroraGreenTintStrength == m_LastAppliedAuroraTint) return;
+
+            m_LastAppliedAlpha = alpha;
+            m_LastAppliedAuroraVisuals = m_IsAuroraMurmuration;
+            m_LastAppliedAuroraTint = Settings.options.AuroraGreenTintStrength;
+
             Color targetColor = GetCrowColor(alpha);
 
             for (int i = 0; i < m_Materials.Length; i++)
@@ -894,12 +901,13 @@
             }
         }
 
+
         private Color GetCrowColor(float alpha)
         {
             Color normal = new(0.03f, 0.03f, 0.03f, alpha);
             if (!m_IsAuroraMurmuration) return normal;
 
-            float tint = Mathf.Clamp01(Settings.options.AuroraGreenTintStrength);
+            float tint = ManagedMath.Clamp01(Settings.options.AuroraGreenTintStrength);
             Color aurora = new(0.08f, 0.42f, 0.22f, alpha);
             return Color.Lerp(normal, aurora, tint);
         }
@@ -909,22 +917,22 @@
             float simulationFps = Settings.options != null ? Settings.options.SimulationFPSLimit : 25f;
             if (simulationFps <= 0f) return float.PositiveInfinity;
 
-            return 1f / Mathf.Clamp(simulationFps, 1f, 50f);
+            return 1f / ManagedMath.Clamp(simulationFps, 1f, 50f);
         }
 
         private static int GetMaxNeighborChecksPerBoid()
         {
-            return Settings.options != null ? Mathf.Clamp(Settings.options.MaxNeighborChecks, 8, 64) : DefaultMaxNeighborChecksPerBoid;
+            return Settings.options != null ? ManagedMath.Clamp(Settings.options.MaxNeighborChecks, 8, 64) : DefaultMaxNeighborChecksPerBoid;
         }
 
         private static float GetBirdSizeMultiplier()
         {
-            return Settings.options != null ? Mathf.Clamp(Settings.options.BirdSize, 0.1f, 2f) : 1f;
+            return Settings.options != null ? ManagedMath.Clamp(Settings.options.BirdSize, 0.1f, 2f) : 1f;
         }
 
         private static int GetTransformUpdateStride()
         {
-            return Settings.options != null ? Mathf.Clamp(Settings.options.TransformUpdateStride, 1, 4) : 1;
+            return Settings.options != null ? ManagedMath.Clamp(Settings.options.TransformUpdateStride, 1, 4) : 1;
         }
 
         private void AddBoid()
@@ -932,43 +940,28 @@
             int index = m_Boids.Count;
             bool isSimulated = index < m_TargetSimulatedBoidCount;
 
-            Vector3 randomOffset = new(
+            Vec3 randomOffset = new(
                 UnityEngine.Random.Range(-InitialSpawnHalfSize, InitialSpawnHalfSize),
                 UnityEngine.Random.Range(-InitialSpawnHalfSize, InitialSpawnHalfSize),
                 UnityEngine.Random.Range(-InitialSpawnHalfSize, InitialSpawnHalfSize));
 
-            Vector3 position = m_Anchor + randomOffset;
-            float maxSpeed = Mathf.Max(0f, Settings.options.MaxSpeed);
-            Vector3 velocity = maxSpeed <= 0f ? Vector3.zero : UnityEngine.Random.onUnitSphere * UnityEngine.Random.Range(6f, Mathf.Max(6.1f, maxSpeed));
-            velocity.y *= 0.35f;
-
-            GameObject boidObject = new(isSimulated ? "Murmurations_Crow_Boid_Simulated" : "Murmurations_Crow_Boid_Follower");
-            boidObject.transform.SetParent(m_Root.transform, true);
-            boidObject.transform.position = position;
-            float scale = UnityEngine.Random.Range(MinBirdScale, MaxBirdScale);
-            boidObject.transform.localScale = Vector3.one * scale * GetBirdSizeMultiplier();
-
-            MeshFilter meshFilter = boidObject.AddComponent<MeshFilter>();
-            meshFilter.sharedMesh = GetSharedQuadMesh();
-
-            MeshRenderer meshRenderer = boidObject.AddComponent<MeshRenderer>();
-            meshRenderer.sharedMaterial = GetMaterialForFrame(0);
-            meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            meshRenderer.receiveShadows = false;
-            meshRenderer.allowOcclusionWhenDynamic = false;
+            Vec3 position = m_Anchor + randomOffset;
+            float maxSpeed = Math.Max(0f, Settings.options.MaxSpeed);
+            Vec3 velocity = maxSpeed <= 0f ? Vec3.Zero : UnityEngine.Random.onUnitSphere.ToNumerics() * UnityEngine.Random.Range(6f, Math.Max(6.1f, maxSpeed));
+            velocity.Y *= 0.35f;
 
             BoidData boid = new()
             {
-                Transform = boidObject.transform,
-                Renderer = meshRenderer,
                 Position = position,
                 Velocity = velocity,
+                BillboardRight = Vec3.UnitX,
+                BillboardUp = Vec3.UnitY,
                 Phase = UnityEngine.Random.Range(0f, 1000f),
-                Scale = scale,
+                Scale = UnityEngine.Random.Range(MinBirdScale, MaxBirdScale),
                 FrameIndex = 0,
                 IsSimulated = isSimulated,
                 LeaderIndex = 0,
-                LeaderOffset = Vector3.zero,
+                LeaderOffset = Vec3.Zero,
                 TrailPositions = isSimulated ? CreateInitialTrail(position) : null,
                 TrailHead = 0,
                 TrailCount = isSimulated ? 1 : 0,
@@ -986,22 +979,19 @@
             if (m_Boids.Count <= 0) return;
 
             int simulatedCount = GetActiveSimulatedBoidCount();
+            Span<BoidData> boids = CollectionsMarshal.AsSpan(m_Boids);
 
-            for (int i = 0; i < m_Boids.Count; i++)
+            for (int i = 0; i < boids.Length; i++)
             {
-                BoidData boid = m_Boids[i];
+                ref BoidData boid = ref boids[i];
                 bool shouldBeSimulated = i < simulatedCount;
 
                 boid.IsSimulated = shouldBeSimulated;
-                if (boid.Transform != null)
-                {
-                    boid.Transform.gameObject.name = shouldBeSimulated ? "Murmurations_Crow_Boid_Simulated" : "Murmurations_Crow_Boid_Follower";
-                }
 
                 if (shouldBeSimulated)
                 {
                     boid.LeaderIndex = i;
-                    boid.LeaderOffset = Vector3.zero;
+                    boid.LeaderOffset = Vec3.Zero;
                     EnsureLeaderTrailInitialized(ref boid);
                 }
                 else
@@ -1012,54 +1002,50 @@
                     boid.LastTrailPosition = boid.Position;
                     AssignFollowerLeader(ref boid, i);
                 }
-
-                m_Boids[i] = boid;
             }
         }
 
         private int GetActiveSimulatedBoidCount()
         {
-            return Mathf.Clamp(m_TargetSimulatedBoidCount, 1, Mathf.Max(1, m_Boids.Count));
+            return ManagedMath.Clamp(m_TargetSimulatedBoidCount, 1, Math.Max(1, m_Boids.Count));
         }
 
         private void AssignFollowerLeader(ref BoidData boid, int boidIndex)
         {
-            int simulatedCount = Mathf.Max(1, GetActiveSimulatedBoidCount());
+            int simulatedCount = Math.Max(1, GetActiveSimulatedBoidCount());
             boid.IsSimulated = false;
 
-            int followerOrdinal = boidIndex >= simulatedCount ? boidIndex - simulatedCount : Mathf.Abs(boidIndex);
+            int followerOrdinal = boidIndex >= simulatedCount ? boidIndex - simulatedCount : Math.Abs(boidIndex);
             boid.LeaderIndex = followerOrdinal % simulatedCount;
 
-            int visibleFollowerCount = Mathf.Max(1, m_TargetBoidCount - simulatedCount);
-            int followersPerLeader = Mathf.Max(1, Mathf.CeilToInt(visibleFollowerCount / Mathf.Max(1f, simulatedCount)));
+            int visibleFollowerCount = Math.Max(1, m_TargetBoidCount - simulatedCount);
+            int followersPerLeader = Math.Max(1, ManagedMath.CeilToInt(visibleFollowerCount / Math.Max(1f, simulatedCount)));
             int slotForLeader = followerOrdinal / simulatedCount;
 
-            float slotT = followersPerLeader <= 1 ? 0.5f : slotForLeader / Mathf.Max(1f, followersPerLeader - 1f);
+            float slotT = followersPerLeader <= 1 ? 0.5f : slotForLeader / Math.Max(1f, followersPerLeader - 1f);
             float randomT = Hash01(followerOrdinal * 47.47f + boid.Phase * 0.083f);
-            float distanceT = Mathf.Clamp01(slotT * 0.7f + randomT * 0.3f);
+            float distanceT = ManagedMath.Clamp01(slotT * 0.7f + randomT * 0.3f);
 
-            float trailLength = Settings.options != null ? Mathf.Clamp(Settings.options.FollowerTrailLength, 5f, 400f) : DefaultFollowerTrailLength;
-            float trailingDistance = Mathf.Lerp(3f, trailLength, Mathf.Pow(distanceT, 0.72f));
+            float trailLength = Settings.options != null ? ManagedMath.Clamp(Settings.options.FollowerTrailLength, 5f, 400f) : DefaultFollowerTrailLength;
+            float trailingDistance = ManagedMath.Lerp(3f, trailLength, (float)Math.Pow(distanceT, 0.72f));
 
-            boid.LeaderOffset = new Vector3(0f, 0f, -trailingDistance);
+            boid.LeaderOffset = new Vec3(0f, 0f, -trailingDistance);
 
             if (boidIndex >= simulatedCount && boid.LeaderIndex >= 0 && boid.LeaderIndex < m_Boids.Count)
             {
-                BoidData leader = m_Boids[boid.LeaderIndex];
-                boid.Position = GetFollowerTargetPosition(boid, leader);
-                if (boid.Transform != null) boid.Transform.position = boid.Position;
+                boid.Position = GetFollowerTargetPosition(boid, CollectionsMarshal.AsSpan(m_Boids)[boid.LeaderIndex]);
             }
         }
 
         private static float Hash01(float value)
         {
-            float raw = Mathf.Sin(value * 12.9898f) * 43758.5453f;
-            return raw - Mathf.Floor(raw);
+            float raw = ManagedMath.Sin(value * 12.9898f) * 43758.5453f;
+            return raw - (float)Math.Floor(raw);
         }
 
-        private static Vector3[] CreateInitialTrail(Vector3 position)
+        private static Vec3[] CreateInitialTrail(Vec3 position)
         {
-            Vector3[] trail = new Vector3[LeaderTrailHistorySize];
+            Vec3[] trail = new Vec3[LeaderTrailHistorySize];
             trail[0] = position;
             return trail;
         }
@@ -1088,20 +1074,20 @@
         {
             EnsureLeaderTrailInitialized(ref boid);
 
-            if ((boid.Position - boid.LastTrailPosition).sqrMagnitude < LeaderTrailRecordMinDistance * LeaderTrailRecordMinDistance) return;
+            if ((boid.Position - boid.LastTrailPosition).LengthSquared() < LeaderTrailRecordMinDistance * LeaderTrailRecordMinDistance) return;
 
             boid.TrailHead = (boid.TrailHead + 1) % LeaderTrailHistorySize;
-            boid.TrailPositions[boid.TrailHead] = boid.Position;
-            boid.TrailCount = Mathf.Min(boid.TrailCount + 1, LeaderTrailHistorySize);
+            boid.TrailPositions![boid.TrailHead] = boid.Position;
+            boid.TrailCount = Math.Min(boid.TrailCount + 1, LeaderTrailHistorySize);
             boid.LastTrailPosition = boid.Position;
         }
 
-        private static Vector3 SampleLeaderTrailPosition(BoidData leader, float distanceBehind)
+        private static Vec3 SampleLeaderTrailPosition(in BoidData leader, float distanceBehind)
         {
             if (leader.TrailPositions == null || leader.TrailCount <= 0) return leader.Position;
             if (distanceBehind <= 0f) return leader.Position;
 
-            Vector3 previous = leader.Position;
+            Vec3 previous = leader.Position;
             float accumulatedDistance = 0f;
 
             for (int i = 0; i < leader.TrailCount; i++)
@@ -1109,8 +1095,8 @@
                 int index = leader.TrailHead - i;
                 if (index < 0) index += LeaderTrailHistorySize;
 
-                Vector3 current = leader.TrailPositions[index];
-                float segmentDistance = Vector3.Distance(previous, current);
+                Vec3 current = leader.TrailPositions[index];
+                float segmentDistance = Vec3.Distance(previous, current);
 
                 if (segmentDistance > 0.001f)
                 {
@@ -1118,7 +1104,7 @@
                     if (nextAccumulatedDistance >= distanceBehind)
                     {
                         float segmentT = (distanceBehind - accumulatedDistance) / segmentDistance;
-                        return Vector3.Lerp(previous, current, Mathf.Clamp01(segmentT));
+                        return Vec3.Lerp(previous, current, ManagedMath.Clamp01(segmentT));
                     }
 
                     accumulatedDistance = nextAccumulatedDistance;
@@ -1132,11 +1118,7 @@
 
         private void RemoveLastBoid()
         {
-            int index = m_Boids.Count - 1;
-            BoidData boid = m_Boids[index];
-            if (boid.Transform != null) UnityEngine.Object.Destroy(boid.Transform.gameObject);
-
-            m_Boids.RemoveAt(index);
+            m_Boids.RemoveAt(m_Boids.Count - 1);
         }
 
         private void UpdateAnchor(float dt)
@@ -1152,24 +1134,25 @@
 
         private void KeepAnchorAboveTerrain()
         {
-            Vector3 rayOrigin = m_Anchor + Vector3.up * 500f;
-            if (!Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, 1200f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore)) return;
+            Vec3 rayOrigin = m_Anchor + Vec3.UnitY * 500f;
+            if (!Physics.Raycast(rayOrigin.ToUnity(), s_UnityDown, out RaycastHit hit, 1200f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore)) return;
 
-            float minY = hit.point.y + Mathf.Max(20f, Settings.options.MinHeightAboveTerrain);
-            if (m_Anchor.y >= minY) return;
+            float minY = hit.point.y + Math.Max(20f, Settings.options.MinHeightAboveTerrain);
+            if (m_Anchor.Y >= minY) return;
 
-            float delta = minY - m_Anchor.y;
-            m_Anchor.y = minY;
-            m_AnchorStart.y += delta;
+            float delta = minY - m_Anchor.Y;
+            m_Anchor.Y = minY;
+            m_AnchorStart.Y += delta;
         }
 
-        private Vector3 GetLeaderCenter(int simulatedCount)
+        private Vec3 GetLeaderCenter(int simulatedCount)
         {
-            int count = Mathf.Min(simulatedCount, m_Boids.Count);
+            int count = Math.Min(simulatedCount, m_Boids.Count);
             if (count <= 0) return m_Anchor;
 
-            Vector3 center = Vector3.zero;
-            for (int i = 0; i < count; i++) center += m_Boids[i].Position;
+            ReadOnlySpan<BoidData> boids = CollectionsMarshal.AsSpan(m_Boids);
+            Vec3 center = Vec3.Zero;
+            for (int i = 0; i < count; i++) center += boids[i].Position;
 
             return center / count;
         }
@@ -1179,90 +1162,151 @@
             if (m_Boids.Count <= 0) return;
 
             Transform playerTransform = GameManager.GetPlayerTransform();
-            Vector3 playerPosition = playerTransform != null ? playerTransform.position : Vector3.zero;
-            Camera viewerCamera = GetViewerCamera(playerPosition);
-            Vector3 viewerPosition = viewerCamera != null ? viewerCamera.transform.position : playerPosition + Vector3.up * 1.65f;
-            float neighborRadius = Mathf.Max(0.1f, Settings.options.NeighborRadius);
-            float separationRadius = Mathf.Max(0.1f, Settings.options.SeparationRadius);
+            Vec3 playerPosition = playerTransform != null ? playerTransform.position.ToNumerics() : Vec3.Zero;
+            float neighborRadius = Math.Max(0.1f, Settings.options.NeighborRadius);
+            float separationRadius = Math.Max(0.1f, Settings.options.SeparationRadius);
             float neighborRadiusSqr = neighborRadius * neighborRadius;
             float separationRadiusSqr = separationRadius * separationRadius;
             float cellSize = neighborRadius;
-            float maxSpeed = Mathf.Max(0f, Settings.options.MaxSpeed);
+            float maxSpeed = Math.Max(0f, Settings.options.MaxSpeed);
 
-            if (maxSpeed <= 0f)
+            if (maxSpeed > 0f)
             {
-                UpdateBoidVisualsOnly(viewerCamera, viewerPosition);
-                return;
+                RebuildSpatialGrid(cellSize);
+
+                int simulatedCount = GetActiveSimulatedBoidCount();
+                Vec3 leaderCenter = GetLeaderCenter(simulatedCount);
+                int maxNeighborChecks = GetMaxNeighborChecksPerBoid();
+                Span<BoidData> boids = CollectionsMarshal.AsSpan(m_Boids);
+
+                for (int i = 0; i < boids.Length; i++)
+                {
+                    ref BoidData boid = ref boids[i];
+
+                    if (i < simulatedCount && boid.IsSimulated)
+                    {
+                        UpdateSimulatedBoid(ref boid, i, dt, playerPosition, leaderCenter, neighborRadiusSqr, separationRadiusSqr, cellSize, maxNeighborChecks, maxSpeed);
+                    }
+                    else
+                    {
+                        UpdateFollowerBoid(ref boid, simulatedCount);
+                    }
+                }
             }
 
-            RebuildSpatialGrid(cellSize);
+            UpdateBirdVisuals(false);
+        }
 
-            int simulatedCount = GetActiveSimulatedBoidCount();
-            Vector3 leaderCenter = GetLeaderCenter(simulatedCount);
-            int maxNeighborChecks = GetMaxNeighborChecksPerBoid();
-            int transformUpdateStride = GetTransformUpdateStride();
-            int transformPhase = Mathf.FloorToInt(m_Elapsed * 60f);
+        // Turns every bird to face the viewer, picks its animation frame and sends the flock to the game in one call.
+        // With "Transform update stride" above 1, only every Nth bird is updated each time, as before.
+        private void UpdateBirdVisuals(bool allBirds)
+        {
+            if (m_Root == null) return;
 
-            for (int i = 0; i < m_Boids.Count; i++)
+            int capacity = Math.Max(m_TargetBoidCount, m_Boids.Count);
+            if (!m_FlockRenderer.Prepare(m_Root.transform, m_Materials, capacity, m_Anchor)) return;
+
+            Transform playerTransform = GameManager.GetPlayerTransform();
+            Vector3 playerPosition = playerTransform != null ? playerTransform.position : default;
+            Camera viewerCamera = GetViewerCamera(playerPosition);
+
+            bool hasCamera = viewerCamera != null;
+            Vec3 cameraForward = Vec3.UnitZ, cameraUp = Vec3.UnitY, cameraRight = Vec3.UnitX;
+            Vec3 viewerPosition;
+            if (hasCamera)
             {
-                BoidData boid = m_Boids[i];
+                Transform cameraTransform = viewerCamera!.transform;
+                viewerPosition = cameraTransform.position.ToNumerics();
+                cameraForward = cameraTransform.forward.ToNumerics();
+                cameraUp = cameraTransform.up.ToNumerics();
+                cameraRight = cameraTransform.right.ToNumerics();
+            }
+            else
+            {
+                viewerPosition = playerPosition.ToNumerics() + Vec3.UnitY * 1.65f;
+            }
 
-                if (i < simulatedCount && boid.IsSimulated)
+            int stride = allBirds ? 1 : GetTransformUpdateStride();
+            int phase = ManagedMath.FloorToInt(m_Elapsed * 60f);
+            bool directional = Settings.options != null && Settings.options.DirectionalCrows;
+            bool animated = IsUsingAnimatedCrowFrames();
+            int frameCount = m_Materials.Length;
+            float time = Time.time;
+            float sizeMultiplier = GetBirdSizeMultiplier();
+            Span<BoidData> boids = CollectionsMarshal.AsSpan(m_Boids);
+
+            for (int i = 0; i < boids.Length; i++)
+            {
+                if (stride > 1 && ((i + phase) % stride) != 0) continue;
+
+                ref BoidData boid = ref boids[i];
+
+                if (hasCamera)
                 {
-                    UpdateSimulatedBoid(ref boid, i, dt, playerPosition, leaderCenter, neighborRadiusSqr, separationRadiusSqr, cellSize, maxNeighborChecks, maxSpeed);
+                    if (directional)
+                    {
+                        SetBillboardBasis(ref boid, cameraForward, GetDirectionalUpHint(boid, cameraForward, cameraUp));
+                    }
+                    else
+                    {
+                        boid.BillboardRight = cameraRight;
+                        boid.BillboardUp = cameraUp;
+                    }
                 }
                 else
                 {
-                    UpdateFollowerBoid(ref boid, dt, simulatedCount);
+                    // Without a camera the bird faces the player; if it is straight above them it keeps its last facing.
+                    Vec3 fromViewer = boid.Position - viewerPosition;
+                    if (fromViewer.LengthSquared() > 0.001f)
+                    {
+                        Vec3 forward = ManagedMath.Normalized(fromViewer);
+                        SetBillboardBasis(ref boid, forward, directional ? GetDirectionalUpHint(boid, forward, Vec3.UnitY) : Vec3.UnitY);
+                    }
                 }
 
-                if (boid.Transform != null && (transformUpdateStride <= 1 || ((i + transformPhase) % transformUpdateStride) == 0))
+                if (animated)
                 {
-                    UpdateBillboardTransform(ref boid, viewerCamera, viewerPosition);
+                    int frameIndex = ManagedMath.FloorToInt((time * BirdAnimationFps) + boid.Phase) % frameCount;
+                    boid.FrameIndex = frameIndex < 0 ? 0 : frameIndex;
                 }
-
-                m_Boids[i] = boid;
-            }
-        }
-
-        private void UpdateBoidVisualsOnly()
-        {
-            Transform playerTransform = GameManager.GetPlayerTransform();
-            Vector3 playerPosition = playerTransform != null ? playerTransform.position : Vector3.zero;
-            Camera viewerCamera = GetViewerCamera(playerPosition);
-            Vector3 viewerPosition = viewerCamera != null ? viewerCamera.transform.position : playerPosition + Vector3.up * 1.65f;
-
-            UpdateBoidVisualsOnly(viewerCamera, viewerPosition);
-        }
-
-        private void UpdateBoidVisualsOnly(Camera viewerCamera, Vector3 viewerPosition)
-        {
-            int transformUpdateStride = GetTransformUpdateStride();
-            int transformPhase = Mathf.FloorToInt(m_Elapsed * 60f);
-
-            for (int i = 0; i < m_Boids.Count; i++)
-            {
-                BoidData boid = m_Boids[i];
-                if (boid.Transform != null && (transformUpdateStride <= 1 || ((i + transformPhase) % transformUpdateStride) == 0))
+                else
                 {
-                    UpdateBillboardTransform(ref boid, viewerCamera, viewerPosition);
-                    m_Boids[i] = boid;
+                    boid.FrameIndex = 0;
                 }
+
+                float flutter = 1f + ManagedMath.Sin(time * WingFlutterSpeed + boid.Phase) * WingFlutterStrength;
+                float scale = boid.Scale * sizeMultiplier;
+                m_FlockRenderer.SetBird(i, boid.Position, boid.BillboardRight * (scale * flutter * 0.5f), boid.BillboardUp * (scale * 0.5f), boid.FrameIndex);
             }
+
+            m_FlockRenderer.Upload(boids.Length, m_Anchor);
         }
 
-        private void UpdateSimulatedBoid(ref BoidData boid, int boidIndex, float dt, Vector3 playerPosition, Vector3 leaderCenter, float neighborRadiusSqr, float separationRadiusSqr, float cellSize, int maxNeighborChecks, float maxSpeed)
+        // Same axes as Quaternion.LookRotation(forward, upHint): the quad faces along forward with its top towards upHint.
+        // When upHint is parallel to forward the bird keeps its last facing.
+        private static void SetBillboardBasis(ref BoidData boid, Vec3 forward, Vec3 upHint)
         {
-            Vector3 separation = Vector3.zero;
-            Vector3 alignment = Vector3.zero;
-            Vector3 cohesion = Vector3.zero;
+            Vec3 right = Vec3.Cross(upHint, forward);
+            if (right.LengthSquared() < 1E-08f) return;
+
+            right = ManagedMath.Normalized(right);
+            boid.BillboardRight = right;
+            boid.BillboardUp = Vec3.Cross(forward, right);
+        }
+
+        private void UpdateSimulatedBoid(ref BoidData boid, int boidIndex, float dt, Vec3 playerPosition, Vec3 leaderCenter, float neighborRadiusSqr, float separationRadiusSqr, float cellSize, int maxNeighborChecks, float maxSpeed)
+        {
+            Vec3 separation = Vec3.Zero;
+            Vec3 alignment = Vec3.Zero;
+            Vec3 cohesion = Vec3.Zero;
             int neighborCount = 0;
             int separationCount = 0;
             int checks = 0;
 
-            int cellX = Mathf.FloorToInt(boid.Position.x / cellSize);
-            int cellY = Mathf.FloorToInt(boid.Position.y / cellSize);
-            int cellZ = Mathf.FloorToInt(boid.Position.z / cellSize);
+            int cellX = ManagedMath.FloorToInt(boid.Position.X / cellSize);
+            int cellY = ManagedMath.FloorToInt(boid.Position.Y / cellSize);
+            int cellZ = ManagedMath.FloorToInt(boid.Position.Z / cellSize);
+            ReadOnlySpan<BoidData> boids = CollectionsMarshal.AsSpan(m_Boids);
 
             for (int x = cellX - 1; x <= cellX + 1 && checks < maxNeighborChecks; x++)
             {
@@ -1278,9 +1322,9 @@
                             if (boidIndex == j) continue;
 
                             checks++;
-                            BoidData other = m_Boids[j];
-                            Vector3 offset = other.Position - boid.Position;
-                            float sqrDistance = offset.sqrMagnitude;
+                            ref readonly BoidData other = ref boids[j];
+                            Vec3 offset = other.Position - boid.Position;
+                            float sqrDistance = offset.LengthSquared();
                             if (sqrDistance > neighborRadiusSqr) continue;
 
                             alignment += other.Velocity;
@@ -1289,7 +1333,7 @@
 
                             if (sqrDistance < separationRadiusSqr && sqrDistance > 0.001f)
                             {
-                                separation -= offset / Mathf.Max(0.25f, sqrDistance);
+                                separation -= offset / Math.Max(0.25f, sqrDistance);
                                 separationCount++;
                             }
                         }
@@ -1297,7 +1341,7 @@
                 }
             }
 
-            Vector3 acceleration = Vector3.zero;
+            Vec3 acceleration = Vec3.Zero;
 
             if (neighborCount > 0)
             {
@@ -1311,29 +1355,29 @@
             }
 
             acceleration += SteerToward(m_Anchor - boid.Position, boid.Velocity) * 0.12f * m_CurrentAnchorWeight;
-            acceleration += GetSphereContainmentForce(boid.Position, boid.Velocity) * Mathf.Clamp(Settings.options.ConfinementSphereStrength, 0f, 3f);
+            acceleration += GetSphereContainmentForce(boid.Position, boid.Velocity) * ManagedMath.Clamp(Settings.options.ConfinementSphereStrength, 0f, 3f);
             acceleration += GetNoiseForce(boid.Phase) * 0.45f * m_CurrentNoiseWeight;
-            acceleration += GetManeuverForce(boid, boidIndex, leaderCenter) * Mathf.Clamp(Settings.options.ManeuverVariationStrength, 0f, 3f) * m_CurrentManeuverWeight;
+            acceleration += GetManeuverForce(boid, boidIndex, leaderCenter) * ManagedMath.Clamp(Settings.options.ManeuverVariationStrength, 0f, 3f) * m_CurrentManeuverWeight;
             acceleration += GetPlayerAvoidance(boid.Position, playerPosition) * 1.4f;
-            if (m_State == MurmurationLifecycleState.FadingOut) acceleration += SteerToward(boid.Position - m_Anchor + Vector3.up * 0.25f, boid.Velocity) * 0.35f;
-            acceleration = Vector3.ClampMagnitude(acceleration, MaxForce);
+            if (m_State == MurmurationLifecycleState.FadingOut) acceleration += SteerToward(boid.Position - m_Anchor + Vec3.UnitY * 0.25f, boid.Velocity) * 0.35f;
+            acceleration = ManagedMath.ClampMagnitude(acceleration, MaxForce);
 
             // Avoiding terrain and objects overrides the flocking forces, and can turn harder so crows don't swing wide into a hill.
             UpdateObstacleAvoidance(ref boid, dt);
-            float avoidanceStrength = Mathf.Clamp01(boid.Avoidance.magnitude);
+            float avoidanceStrength = ManagedMath.Clamp01(boid.Avoidance.Length());
             if (avoidanceStrength > 0.001f)
             {
-                Vector3 avoidanceVelocity = boid.Avoidance.normalized * maxSpeed;
-                Vector3 avoidanceForce = Vector3.ClampMagnitude(avoidanceVelocity - boid.Velocity, MaxForce * ObstacleAvoidanceForceMultiplier);
-                acceleration = Vector3.Lerp(acceleration, avoidanceForce, avoidanceStrength);
+                Vec3 avoidanceVelocity = ManagedMath.Normalized(boid.Avoidance) * maxSpeed;
+                Vec3 avoidanceForce = ManagedMath.ClampMagnitude(avoidanceVelocity - boid.Velocity, MaxForce * ObstacleAvoidanceForceMultiplier);
+                acceleration = Vec3.Lerp(acceleration, avoidanceForce, avoidanceStrength);
             }
 
-            boid.Velocity = Vector3.ClampMagnitude(boid.Velocity + acceleration * dt, maxSpeed);
+            boid.Velocity = ManagedMath.ClampMagnitude(boid.Velocity + acceleration * dt, maxSpeed);
             boid.Position += boid.Velocity * dt;
             RecordLeaderTrailPoint(ref boid);
         }
 
-        private void UpdateFollowerBoid(ref BoidData boid, float dt, int simulatedCount)
+        private void UpdateFollowerBoid(ref BoidData boid, int simulatedCount)
         {
             if (simulatedCount <= 0) return;
 
@@ -1342,16 +1386,14 @@
                 AssignFollowerLeader(ref boid, -1);
             }
 
-            BoidData leader = m_Boids[boid.LeaderIndex];
-            Vector3 targetPosition = GetFollowerTargetPosition(boid, leader);
-
-            boid.Position = targetPosition;
+            ref readonly BoidData leader = ref CollectionsMarshal.AsSpan(m_Boids)[boid.LeaderIndex];
+            boid.Position = GetFollowerTargetPosition(boid, leader);
             boid.Velocity = leader.Velocity;
         }
 
-        private Vector3 GetFollowerTargetPosition(BoidData follower, BoidData leader)
+        private static Vec3 GetFollowerTargetPosition(in BoidData follower, in BoidData leader)
         {
-            float distanceBehind = Mathf.Abs(follower.LeaderOffset.z);
+            float distanceBehind = Math.Abs(follower.LeaderOffset.Z);
             return SampleLeaderTrailPosition(leader, distanceBehind);
         }
 
@@ -1426,63 +1468,31 @@
             return true;
         }
 
-        private void UpdateBillboardTransform(ref BoidData boid, Camera viewerCamera, Vector3 viewerPosition)
-        {
-            boid.Transform.position = boid.Position;
-            bool directional = Settings.options != null && Settings.options.DirectionalCrows;
-
-            if (viewerCamera != null)
-            {
-                Transform cameraTransform = viewerCamera.transform;
-                boid.Transform.rotation = directional
-                    ? GetDirectionalBillboardRotation(boid, cameraTransform.forward, cameraTransform.up)
-                    : cameraTransform.rotation;
-            }
-            else
-            {
-                Vector3 fromViewer = boid.Position - viewerPosition;
-                if (fromViewer.sqrMagnitude > 0.001f)
-                {
-                    boid.Transform.rotation = directional
-                        ? GetDirectionalBillboardRotation(boid, fromViewer.normalized, Vector3.up)
-                        : Quaternion.LookRotation(fromViewer.normalized, Vector3.up);
-                }
-            }
-
-            if (IsUsingAnimatedCrowFrames() && boid.Renderer != null)
-            {
-                int frameIndex = Mathf.FloorToInt((Time.time * BirdAnimationFps) + boid.Phase) % m_Materials.Length;
-                if (frameIndex < 0) frameIndex = 0;
-
-                if (frameIndex != boid.FrameIndex)
-                {
-                    boid.Renderer.sharedMaterial = GetMaterialForFrame(frameIndex);
-                    boid.FrameIndex = frameIndex;
-                }
-            }
-
-            float flutter = 1f + Mathf.Sin(Time.time * WingFlutterSpeed + boid.Phase) * WingFlutterStrength;
-            float scale = boid.Scale * GetBirdSizeMultiplier();
-            boid.Transform.localScale = new Vector3(scale * flutter, scale, 1f);
-        }
-
+        // Cell lists are reused between rebuilds so the grid doesn't create garbage every simulation step.
         private void RebuildSpatialGrid(float cellSize)
         {
+            foreach (List<int> cell in m_SpatialGrid.Values)
+            {
+                cell.Clear();
+                m_SpatialGridListPool.Push(cell);
+            }
+
             m_SpatialGrid.Clear();
 
             int simulatedCount = GetActiveSimulatedBoidCount();
+            ReadOnlySpan<BoidData> boids = CollectionsMarshal.AsSpan(m_Boids);
 
             for (int i = 0; i < simulatedCount; i++)
             {
-                Vector3 position = m_Boids[i].Position;
-                int cellX = Mathf.FloorToInt(position.x / cellSize);
-                int cellY = Mathf.FloorToInt(position.y / cellSize);
-                int cellZ = Mathf.FloorToInt(position.z / cellSize);
+                Vec3 position = boids[i].Position;
+                int cellX = ManagedMath.FloorToInt(position.X / cellSize);
+                int cellY = ManagedMath.FloorToInt(position.Y / cellSize);
+                int cellZ = ManagedMath.FloorToInt(position.Z / cellSize);
                 int key = GetCellKey(cellX, cellY, cellZ);
 
                 if (!m_SpatialGrid.TryGetValue(key, out List<int> indices))
                 {
-                    indices = new List<int>(16);
+                    indices = m_SpatialGridListPool.Count > 0 ? m_SpatialGridListPool.Pop() : new List<int>(16);
                     m_SpatialGrid[key] = indices;
                 }
 
@@ -1508,7 +1518,7 @@
         {
             if (Settings.options == null || !Settings.options.AvoidObstacles)
             {
-                boid.Avoidance = Vector3.zero;
+                boid.Avoidance = Vec3.Zero;
                 return;
             }
 
@@ -1517,158 +1527,144 @@
 
             boid.AvoidanceCheckTimer = ObstacleCheckIntervalSeconds;
 
-            float clearance = Mathf.Clamp(Settings.options.ObstacleClearance, 5f, 100f);
-            Vector3 avoidance = Vector3.zero;
+            float clearance = ManagedMath.Clamp(Settings.options.ObstacleClearance, 5f, 100f);
+            Vec3 avoidance = Vec3.Zero;
 
             // Starting the ray above the crow also catches crows that have already dipped slightly below the surface.
-            if (Physics.Raycast(boid.Position + Vector3.up * clearance, Vector3.down, out RaycastHit groundHit, clearance * 2f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+            if (Physics.Raycast((boid.Position + Vec3.UnitY * clearance).ToUnity(), s_UnityDown, out RaycastHit groundHit, clearance * 2f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
             {
-                float heightAboveGround = boid.Position.y - groundHit.point.y;
-                float urgency = 1f - Mathf.Clamp01(heightAboveGround / clearance);
-                avoidance += (groundHit.normal + Vector3.up).normalized * urgency;
+                float heightAboveGround = boid.Position.Y - groundHit.point.y;
+                float urgency = 1f - ManagedMath.Clamp01(heightAboveGround / clearance);
+                avoidance += ManagedMath.Normalized(groundHit.normal.ToNumerics() + Vec3.UnitY) * urgency;
             }
 
-            float speed = boid.Velocity.magnitude;
+            float speed = boid.Velocity.Length();
             if (speed > 0.1f)
             {
-                Vector3 direction = boid.Velocity / speed;
-                float lookAhead = Mathf.Max(clearance * 2f, speed * ObstacleLookAheadSeconds);
+                Vec3 direction = boid.Velocity / speed;
+                float lookAhead = Math.Max(clearance * 2f, speed * ObstacleLookAheadSeconds);
                 float probeRadius = clearance * 0.25f;
 
-                if (Physics.SphereCast(boid.Position, probeRadius, direction, out RaycastHit hit, lookAhead, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+                if (Physics.SphereCast(boid.Position.ToUnity(), probeRadius, direction.ToUnity(), out RaycastHit hit, lookAhead, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
                 {
-                    float urgency = 1f - Mathf.Clamp01((hit.distance - clearance) / Mathf.Max(0.01f, lookAhead - clearance));
+                    float urgency = 1f - ManagedMath.Clamp01((hit.distance - clearance) / Math.Max(0.01f, lookAhead - clearance));
 
                     // Slide along the surface and away from it, preferring to fly over obstacles rather than around them.
-                    Vector3 slide = Vector3.ProjectOnPlane(direction, hit.normal);
-                    Vector3 escape = hit.normal + Vector3.up * 0.5f;
-                    if (slide.sqrMagnitude > 0.01f) escape += slide.normalized;
+                    Vec3 normal = hit.normal.ToNumerics();
+                    Vec3 slide = ManagedMath.ProjectOnPlane(direction, normal);
+                    Vec3 escape = normal + Vec3.UnitY * 0.5f;
+                    if (slide.LengthSquared() > 0.01f) escape += ManagedMath.Normalized(slide);
 
-                    avoidance += escape.normalized * urgency;
+                    avoidance += ManagedMath.Normalized(escape) * urgency;
                 }
             }
 
-            boid.Avoidance = Vector3.ClampMagnitude(avoidance, 1f);
+            boid.Avoidance = ManagedMath.ClampMagnitude(avoidance, 1f);
         }
 
-        private static Vector3 SteerToward(Vector3 desiredDirection, Vector3 currentVelocity)
+        private static Vec3 SteerToward(Vec3 desiredDirection, Vec3 currentVelocity)
         {
-            if (desiredDirection.sqrMagnitude < 0.001f) return Vector3.zero;
+            if (desiredDirection.LengthSquared() < 0.001f) return Vec3.Zero;
 
-            float maxSpeed = Settings.options != null ? Mathf.Max(0f, Settings.options.MaxSpeed) : 0f;
-            if (maxSpeed <= 0f) return Vector3.zero;
+            float maxSpeed = Settings.options != null ? Math.Max(0f, Settings.options.MaxSpeed) : 0f;
+            if (maxSpeed <= 0f) return Vec3.Zero;
 
-            Vector3 desiredVelocity = desiredDirection.normalized * maxSpeed;
-            return Vector3.ClampMagnitude(desiredVelocity - currentVelocity, MaxForce);
+            Vec3 desiredVelocity = ManagedMath.Normalized(desiredDirection) * maxSpeed;
+            return ManagedMath.ClampMagnitude(desiredVelocity - currentVelocity, MaxForce);
         }
 
-        private Vector3 GetSphereContainmentForce(Vector3 boidPosition, Vector3 currentVelocity)
+        private Vec3 GetSphereContainmentForce(Vec3 boidPosition, Vec3 currentVelocity)
         {
-            float radius = Settings.options != null ? Mathf.Clamp(Settings.options.ConfinementSphereRadius, 30f, 300f) : 95f;
-            Vector3 fromCenter = boidPosition - m_Anchor;
-            float distance = fromCenter.magnitude;
-            if (distance <= radius || distance <= 0.001f) return Vector3.zero;
+            float radius = Settings.options != null ? ManagedMath.Clamp(Settings.options.ConfinementSphereRadius, 30f, 300f) : 95f;
+            Vec3 fromCenter = boidPosition - m_Anchor;
+            float distance = fromCenter.Length();
+            if (distance <= radius || distance <= 0.001f) return Vec3.Zero;
 
-            Vector3 inward = -fromCenter / distance;
-            float softMargin = Mathf.Max(12f, radius * 0.45f);
-            float edgeT = Mathf.Clamp01((distance - radius) / softMargin);
-            edgeT = Mathf.SmoothStep(0f, 1f, edgeT);
+            Vec3 inward = -fromCenter / distance;
+            float softMargin = Math.Max(12f, radius * 0.45f);
+            float edgeT = ManagedMath.Clamp01((distance - radius) / softMargin);
+            edgeT = ManagedMath.SmoothStep(0f, 1f, edgeT);
 
-            Vector3 desired = inward;
+            Vec3 desired = inward;
 
-            if (currentVelocity.sqrMagnitude > 0.01f)
+            if (currentVelocity.LengthSquared() > 0.01f)
             {
-                Vector3 outward = fromCenter / distance;
-                float outwardSpeed = Vector3.Dot(currentVelocity, outward);
+                Vec3 outward = fromCenter / distance;
+                float outwardSpeed = Vec3.Dot(currentVelocity, outward);
 
                 if (outwardSpeed > 0f)
                 {
-                    Vector3 tangent = currentVelocity - outward * outwardSpeed;
-                    if (tangent.sqrMagnitude > 0.01f)
+                    Vec3 tangent = currentVelocity - outward * outwardSpeed;
+                    if (tangent.LengthSquared() > 0.01f)
                     {
-                        tangent.Normalize();
-                        desired = Vector3.Lerp(inward, tangent - outward * 0.35f, Mathf.Lerp(0.35f, 0.7f, edgeT)).normalized;
+                        tangent = ManagedMath.Normalized(tangent);
+                        desired = ManagedMath.Normalized(Vec3.Lerp(inward, tangent - outward * 0.35f, ManagedMath.Lerp(0.35f, 0.7f, edgeT)));
                     }
                 }
             }
 
-            return SteerToward(desired, currentVelocity) * Mathf.Lerp(0.35f, 1f, edgeT);
+            return SteerToward(desired, currentVelocity) * ManagedMath.Lerp(0.35f, 1f, edgeT);
         }
 
-        private Vector3 GetManeuverForce(BoidData boid, int boidIndex, Vector3 leaderCenter)
+        private Vec3 GetManeuverForce(in BoidData boid, int boidIndex, Vec3 leaderCenter)
         {
-            if (m_CurrentManeuverDirection.sqrMagnitude <= 0.001f) return Vector3.zero;
+            if (m_CurrentManeuverDirection.LengthSquared() <= 0.001f) return Vec3.Zero;
 
-            float waveStrength = Settings.options != null ? Mathf.Clamp(Settings.options.ManeuverWaveStrength, 0f, 3f) : 0.75f;
-            Vector3 direction = m_CurrentManeuverDirection;
-            Vector3 side = Vector3.Cross(Vector3.up, direction);
-            if (side.sqrMagnitude <= 0.001f) side = Vector3.right;
-            side.Normalize();
+            float waveStrength = Settings.options != null ? ManagedMath.Clamp(Settings.options.ManeuverWaveStrength, 0f, 3f) : 0.75f;
+            Vec3 direction = m_CurrentManeuverDirection;
+            Vec3 side = Vec3.Cross(Vec3.UnitY, direction);
+            if (side.LengthSquared() <= 0.001f) side = Vec3.UnitX;
+            side = ManagedMath.Normalized(side);
 
-            Vector3 radial = boid.Position - leaderCenter;
-            if (radial.sqrMagnitude > 0.001f) radial.Normalize();
-            else radial = Vector3.zero;
+            Vec3 radial = boid.Position - leaderCenter;
+            if (radial.LengthSquared() > 0.001f) radial = ManagedMath.Normalized(radial);
+            else radial = Vec3.Zero;
 
-            float wave = Mathf.Sin(m_Elapsed * 0.73f + boidIndex * 0.37f + boid.Phase * 0.011f);
-            float verticalWave = Mathf.Sin(m_Elapsed * 0.41f + boidIndex * 0.19f + boid.Phase * 0.017f);
-            float slowPulse = Mathf.Sin(m_Elapsed * 0.19f + boid.Phase * 0.007f);
+            float wave = ManagedMath.Sin(m_Elapsed * 0.73f + boidIndex * 0.37f + boid.Phase * 0.011f);
+            float verticalWave = ManagedMath.Sin(m_Elapsed * 0.41f + boidIndex * 0.19f + boid.Phase * 0.017f);
+            float slowPulse = ManagedMath.Sin(m_Elapsed * 0.19f + boid.Phase * 0.007f);
 
-            Vector3 desired = direction * (0.9f + slowPulse * 0.2f);
+            Vec3 desired = direction * (0.9f + slowPulse * 0.2f);
             desired += side * wave * waveStrength * 0.55f;
-            desired += Vector3.up * verticalWave * waveStrength * 0.22f;
-            desired += radial * m_CurrentExpansionBias * (0.45f + Mathf.Abs(wave) * 0.35f);
+            desired += Vec3.UnitY * verticalWave * waveStrength * 0.22f;
+            desired += radial * m_CurrentExpansionBias * (0.45f + Math.Abs(wave) * 0.35f);
 
             return SteerToward(desired, boid.Velocity);
         }
 
-        private Vector3 GetNoiseForce(float phase)
+        private Vec3 GetNoiseForce(float phase)
         {
             float seed = phase * 0.0137f;
             float t = m_Elapsed * 0.17f;
             float x = Mathf.PerlinNoise(seed + 11.31f, t + 3.17f) * 2f - 1f;
             float y = (Mathf.PerlinNoise(seed + 23.73f, t * 0.83f + 19.91f) * 2f - 1f) * 0.28f;
             float z = Mathf.PerlinNoise(seed + 41.19f, t + 37.43f) * 2f - 1f;
-            return new Vector3(x, y, z);
+            return new Vec3(x, y, z);
         }
 
-        // The bird icons are drawn head up, so the quad's up axis is turned towards the flight direction as seen from the viewer.
-        private static Quaternion GetDirectionalBillboardRotation(BoidData boid, Vector3 viewForward, Vector3 fallbackUp)
+        // The bird icons are drawn head up, so the quad's top is turned towards the flight direction as seen from the viewer.
+        private static Vec3 GetDirectionalUpHint(in BoidData boid, Vec3 viewForward, Vec3 fallbackUp)
         {
-            Vector3 screenDirection = Vector3.ProjectOnPlane(boid.Velocity, viewForward);
+            Vec3 screenDirection = ManagedMath.ProjectOnPlane(boid.Velocity, viewForward);
 
             // Flying almost straight towards or away from the viewer leaves no clear direction, so keep the current heading.
-            if (screenDirection.sqrMagnitude <= boid.Velocity.sqrMagnitude * 0.01f || screenDirection.sqrMagnitude < 0.0001f)
+            if (screenDirection.LengthSquared() <= boid.Velocity.LengthSquared() * 0.01f || screenDirection.LengthSquared() < 0.0001f)
             {
-                screenDirection = Vector3.ProjectOnPlane(boid.Transform.up, viewForward);
-                if (screenDirection.sqrMagnitude < 0.0001f) screenDirection = fallbackUp;
+                screenDirection = ManagedMath.ProjectOnPlane(boid.BillboardUp, viewForward);
+                if (screenDirection.LengthSquared() < 0.0001f) screenDirection = fallbackUp;
             }
 
-            return Quaternion.LookRotation(viewForward, screenDirection);
+            return screenDirection;
         }
 
-        private static Vector3 GetPlayerAvoidance(Vector3 boidPosition, Vector3 playerPosition)
+        private static Vec3 GetPlayerAvoidance(Vec3 boidPosition, Vec3 playerPosition)
         {
-            Vector3 away = boidPosition - playerPosition;
-            float distance = away.magnitude;
-            if (distance >= PlayerAvoidDistance || distance <= 0.01f) return Vector3.zero;
+            Vec3 away = boidPosition - playerPosition;
+            float distance = away.Length();
+            if (distance >= PlayerAvoidDistance || distance <= 0.01f) return Vec3.Zero;
 
-            float strength = 1f - Mathf.Clamp01(distance / PlayerAvoidDistance);
-            return away.normalized * strength * MaxForce;
-        }
-
-        private static Mesh GetSharedQuadMesh()
-        {
-            if (s_QuadMesh != null) return s_QuadMesh;
-
-            GameObject tempQuad = GameObject.CreatePrimitive(PrimitiveType.Quad);
-            MeshFilter meshFilter = tempQuad.GetComponent<MeshFilter>();
-            s_QuadMesh = meshFilter != null ? meshFilter.sharedMesh : null;
-
-            Collider collider = tempQuad.GetComponent<Collider>();
-            if (collider != null) UnityEngine.Object.Destroy(collider);
-
-            UnityEngine.Object.Destroy(tempQuad);
-            return s_QuadMesh;
+            float strength = 1f - ManagedMath.Clamp01(distance / PlayerAvoidDistance);
+            return ManagedMath.Normalized(away) * strength * MaxForce;
         }
 
         private static Material[] CreateMaterials()
@@ -1867,14 +1863,11 @@
 
         public void Destroy()
         {
-            for (int i = 0; i < m_Boids.Count; i++)
-            {
-                if (m_Boids[i].Transform != null) UnityEngine.Object.Destroy(m_Boids[i].Transform.gameObject);
-            }
-
             m_Boids.Clear();
             m_SpatialGrid.Clear();
+            m_SpatialGridListPool.Clear();
 
+            m_FlockRenderer.Destroy();
             DestroyMaterials();
             m_Sound.Destroy();
 
@@ -1888,21 +1881,22 @@
 
     internal struct BoidData
     {
-        public Transform Transform;
-        public MeshRenderer Renderer;
-        public Vector3 Position;
-        public Vector3 Velocity;
+        public Vec3 Position;
+        public Vec3 Velocity;
+        // The bird's on-screen axes from its last visual update; kept when a new facing can't be worked out.
+        public Vec3 BillboardRight;
+        public Vec3 BillboardUp;
         public float Phase;
         public float Scale;
         public int FrameIndex;
         public bool IsSimulated;
         public int LeaderIndex;
-        public Vector3 LeaderOffset;
-        public Vector3[] TrailPositions;
+        public Vec3 LeaderOffset;
+        public Vec3[]? TrailPositions;
         public int TrailHead;
         public int TrailCount;
-        public Vector3 LastTrailPosition;
-        public Vector3 Avoidance;
+        public Vec3 LastTrailPosition;
+        public Vec3 Avoidance;
         public float AvoidanceCheckTimer;
     }
 }
